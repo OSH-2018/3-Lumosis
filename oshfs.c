@@ -41,13 +41,13 @@ int get_free_block(){
 
 static struct filenode *get_filenode(const char *name)
 {   
-    printf("调用get_filenode\n");
+
     struct filenode *node = root;
     while(node) {
         if(strcmp(node->filename, name + 1) != 0)
             node = node->next;
         else{
-            printf("get_filenode调用完成\n");
+
             return node;
         }
     }
@@ -128,17 +128,27 @@ static void *oshfs_init(struct fuse_conn_info *conn)
 
 static int oshfs_getattr(const char *path, struct stat *stbuf)
 {   
+    size_t blocksize=(size_t)65536;
+    int *next_block;
     printf("调用getattr\n");
+    printf("要找：%s\n",path);
     int ret = 0;
     struct filenode *node = get_filenode(path);
     if(strcmp(path, "/") == 0) {
         memset(stbuf, 0, sizeof(struct stat));
         stbuf->st_mode = S_IFDIR | 0755;
     } else if(node) {
+        printf("文件名：%s\n",node->filename );
+        printf("size=%d \n startb=%d \n",node->st->st_size,node->start_block );
+        for(next_block=&node->start_block;*next_block!=-1;next_block=(char *)mem[*next_block]+blocksize-sizeof(int)){
+            printf("block=%d \n",*next_block);
+        }
         memcpy(stbuf, node->st, sizeof(struct stat));
     } else {
+        printf("没找到\n");
         ret = -ENOENT;
     }
+    printf("ret=%d\n",ret);
     return ret;
 }
 
@@ -237,15 +247,29 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
         
     }
     else{
-
         char *offset_addr;
         off_t offsetting=blocksize-(sizeof(struct filenode)+strlen(node->filename)+1+sizeof(struct stat))-sizeof(int);
         next_block=&(node->start_block);
         //确定offset所对应的地址
         printf("offsetting=%d \nstart_block:%d\n",offsetting,node->start_block);
-        while(offset-offsetting>0){       
+        while(offset>offsetting){
+            //printf("正在找对应地址\n");       
             offsetting+=blocksize-sizeof(int);
             next_block=(char *)mem[*next_block]+blocksize-sizeof(int);
+           // printf("offsettting=%d \n next_block=%d\n",offsetting,*next_block);
+            if(*next_block==-1){
+                *next_block=get_free_block();
+                if(*next_block==-1){
+                    printf("内存已满!\n");
+                    return -ENOSPC;
+                }
+                else{
+                    mem[*next_block]=mmap(NULL, blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                    int *one;
+                    one=(char *)mem[*next_block]+blocksize-sizeof(int);
+                    *one=-1;
+                }
+            }
         }
         if(next_block==&(node->start_block)){
             offset_addr=(char *)mem[*next_block]+sizeof(struct filenode)+strlen(node->filename)+1+sizeof(struct stat)+offset;
@@ -264,6 +288,7 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
             memcpy(offset_addr,(char *)buf + copied,copying);
             copied+=copying;
             copying=blocksize-sizeof(int);
+            printf("%d\n",*next_block);
             next_block=(char *)mem[*next_block]+blocksize-sizeof(int);
             if(*next_block==-1){
                 *next_block=get_free_block();
