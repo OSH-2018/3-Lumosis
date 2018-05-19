@@ -9,9 +9,10 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include <stdio.h>
 
 #define blocksize 65536
+static const size_t size = 4 * 1024 * 1024 * (size_t)1024;
+static void *mem[64 * 1024];
 
 struct filenode {
     char *filename;
@@ -26,7 +27,7 @@ struct filenode {
 typedef struct node *PNode;  
 
 typedef struct node{
-    int blocknum;
+    int blocknum;//blockID
     PNode next;
 }Node;
 
@@ -36,8 +37,12 @@ typedef struct{
     int size;
 }Queue;
 
+static struct filenode *root = NULL;
+Queue *block_queue;
+
 Queue *InitQueue(){
-    Queue *pqueue=(Queue *)malloc(sizeof(Queue));
+    off_t offset=sizeof(struct filenode *);
+    Queue *pqueue=(char *)mem[0]+offset;
     if(pqueue!=NULL){
         pqueue->front=NULL;
         pqueue->rear=NULL;
@@ -54,19 +59,17 @@ int IsEmpty(Queue *pqueue)  {
 }  
 
 PNode EnQueue(Queue *pqueue,int blocknum){
-    PNode pnode=(PNode)malloc(sizeof(Node));
-    if(pnode!=NULL){
-        pnode->next=NULL;
-        pnode->blocknum=blocknum;
-        if(IsEmpty(pqueue)){
-            pqueue->front=pnode;
-        }
-        else{
-            pqueue->rear->next=pnode;
-        }
-        pqueue->rear=pnode;
-        pqueue->size++;
+    off_t offset=sizeof(struct filenode *)+sizeof(Queue);
+    PNode pnode=(char *)mem[0]+offset+(blocknum-1)*sizeof(Node);//找到blocknum对应的队列节点，将其插入队尾
+    pnode->next=NULL;
+    if(IsEmpty(pqueue)){
+        pqueue->front=pnode;
     }
+    else{
+        pqueue->rear->next=pnode;
+    }
+    pqueue->rear=pnode;
+    pqueue->size++;
     return pnode;
 }
 
@@ -77,18 +80,12 @@ PNode DeQueue(Queue *pqueue,int *blocknum){
             *blocknum=pnode->blocknum;
         pqueue->size--;
         pqueue->front=pnode->next;
-        free(pnode);
         if(pqueue->size==0)
             pqueue->rear=NULL;
     }
     return pqueue->front;
 }
 
-static const size_t size = 4 * 1024 * 1024 * (size_t)1024;
-static void *mem[64 * 1024];
-
-static struct filenode *root = NULL;
-Queue *block_queue;
 
 static struct filenode *get_filenode(const char *name){
     struct filenode *node = root;
@@ -148,12 +145,13 @@ static void create_filenode(const char *filename, const struct stat *st){
     offset+=sizeof(struct stat);
     memcpy(new->st, st, sizeof(struct stat));
 
-    printf("offset=%d\n",offset);
+    printf("offset=%d\n", offset);
     new->rear_addr=(char *)mem[n]+offset;
     new->last_block=new->start_block=n;
     new->next = root;
     new->content =(char *)mem[n]+offset;
     root = new;
+    memcpy(mem[0],&root,sizeof(struct filenode *));
     int *next_block;
     next_block=(char *)mem[new->start_block]+blocksize-sizeof(int);
     *next_block=-1;//该块最末端sizeof(int)个字节存入-1，代表该块所存文件到此块截止。
@@ -173,14 +171,25 @@ static void *oshfs_init(struct fuse_conn_info *conn){
     }
 
     //mem[0]用来储存root指针
-    mem[0]=mmap(NULL, blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    memcpy(mem[0],&root,sizeof(struct filenode *));
+    mem[0]=mmap(NULL, (sizeof(Node)+1)*blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    memcpy(mem[0],&root,sizeof(struct filenode *));//root指针动态储存，每改变一次就储存一次
     //初始化空队列
     block_queue=InitQueue();
     //建立队列
+    off_t offset;
+    offset=sizeof(struct filenode *)+sizeof(Queue);
     for(int i=1;i<blocknr;i++){
-        EnQueue(block_queue,i);
+        PNode noding;
+        noding=(char *)mem[0]+offset;
+        noding->blocknum=i;
+        noding->next=(char *)noding+sizeof(Node);
+        offset+=sizeof(Node);
     }
+    PNode noding=(char *)mem[0]+offset-sizeof(Node);
+    noding->next=NULL;
+    block_queue->front=(char *)mem[0]+sizeof(struct filenode *)+sizeof(Queue);
+    block_queue->rear=(char *)mem[0]+offset-sizeof(Node);
+    block_queue->size=blocknr-1;
     printf("init调用完成\n");
     return NULL;
 
@@ -257,6 +266,7 @@ static int oshfs_truncate(const char *path, off_t size){//将文件大小修改�
         for(int i=0;i<block_diff;i++){
             next_block=(char *)mem[*next_block]+blocksize-sizeof(int);
             *next_block=my_malloc();
+            printf("malloc_block=%d\n",*next_block);
             if(*next_block==-1){
                 printf("内存已满!\n");
                 return -ENOSPC;
@@ -344,7 +354,9 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
         last_block=node->last_block;
     }
     if(offset + size > node->st->st_size){
-        oshfs_truncate(path,offset+size);
+        if(oshfs_truncate(path,offset+size)==-ENOSPC){
+            return -ENOSPC;
+        }
     }
 
     printf("st_size=%d\n", node->st->st_size );
@@ -454,7 +466,7 @@ static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, st
 }
 
 static int oshfs_unlink(const char *path){
-    // Implementing
+    // Implemented
     //删除操作
     printf("调用unlink\n");
     printf("删除的是：%s \n",path);
@@ -472,6 +484,7 @@ static int oshfs_unlink(const char *path){
         }
         last->next= last->next->next;
     }
+    memcpy(mem[0],&root,sizeof(struct filenode *));
     printf("文件链表已处理完毕\n");
 
 
