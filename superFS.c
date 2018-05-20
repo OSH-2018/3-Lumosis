@@ -241,7 +241,7 @@ static int oshfs_mknod(const char *path, mode_t mode, dev_t dev){
     st.st_atime = now;
     st.st_ctime = now;
     st.st_mtime = now;
-    st.st_blksize = (size_t)0;
+    st.st_blksize = (size_t)blocksize;
     st.st_blocks = 0;
     st.st_dev = dev;
     create_filenode(path + 1, &st);
