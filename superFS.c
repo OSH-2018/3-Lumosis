@@ -150,6 +150,7 @@ static void create_filenode(const char *filename, const struct stat *st){
     new->last_block=new->start_block=n;
     new->next = root;
     new->content =(char *)mem[n]+offset;
+    new->st->st_blocks++;
     root = new;
     memcpy(mem[0],&root,sizeof(struct filenode *));
     int *next_block;
@@ -205,6 +206,7 @@ static int oshfs_getattr(const char *path, struct stat *stbuf){
         stbuf->st_mode = S_IFDIR | 0755;
     } else if(node) {
         memcpy(stbuf, node->st, sizeof(struct stat));
+        printf("blocksize=%d\nblocks=%d\n",stbuf->st_blksize,stbuf->st_blocks);
     } else {
         printf("没找到\n");
         ret = -ENOENT;
@@ -239,7 +241,7 @@ static int oshfs_mknod(const char *path, mode_t mode, dev_t dev){
     st.st_atime = now;
     st.st_ctime = now;
     st.st_mtime = now;
-    st.st_blksize = blocksize;
+    st.st_blksize = (size_t)0;
     st.st_blocks = 0;
     st.st_dev = dev;
     create_filenode(path + 1, &st);
@@ -272,6 +274,7 @@ static int oshfs_truncate(const char *path, off_t size){//将文件大小修改�
                 return -ENOSPC;
             }
         }
+        node->st->st_blocks=block_demand;
         //改变last_block
         if(((size-(blocksize-sizeof(int)-(sizeof(struct filenode)+strlen(node->filename)\
         +1+sizeof(struct stat))))%(blocksize-sizeof(int)))==0){
@@ -281,6 +284,7 @@ static int oshfs_truncate(const char *path, off_t size){//将文件大小修改�
                 printf("内存已满!\n");
                 return -ENOSPC;
             }
+            node->st->st_blocks++;
         }//多分配一块
         node->last_block=*next_block;        
         next_block=(char *)mem[*next_block]+blocksize-sizeof(int);
@@ -293,10 +297,12 @@ static int oshfs_truncate(const char *path, off_t size){//将文件大小修改�
         for(int i=0;i<block_demand-1;i++){
             next_block=(char *)mem[*next_block]+blocksize-sizeof(int);
         }
+        node->st->st_blocks=block_demand;
         if((size-(blocksize-sizeof(int)-(sizeof(struct filenode)+strlen(node->filename)+1+sizeof(struct stat)))>=0)\
         &&((size-(blocksize-sizeof(int)-(sizeof(struct filenode)+strlen(node->filename)\
         +1+sizeof(struct stat))))%(blocksize-sizeof(int)))==0){
             next_block=(char *)mem[*next_block]+blocksize-sizeof(int);
+            node->st->st_blocks++;
         }
         node->last_block=*next_block;
         if(size>=blocksize-sizeof(int)-(sizeof(struct filenode)+strlen(node->filename)+1+sizeof(struct stat))){
@@ -320,6 +326,7 @@ static int oshfs_truncate(const char *path, off_t size){//将文件大小修改�
                 printf("内存已满!\n");
                 return -ENOSPC;
             }
+            node->st->st_blocks++;
             node->last_block=*next_block;
             next_block=(char *)mem[*next_block]+blocksize-sizeof(int);
             *next_block=-1;
